@@ -5,7 +5,13 @@ environment defined in
 [`docs/adr/0001-single-region-scale-to-zero-aca-topology-for-dev-environment.md`](../../../docs/adr/0001-single-region-scale-to-zero-aca-topology-for-dev-environment.md):
 a resource group, an Azure Container Apps (ACA) environment, a PostgreSQL
 Flexible Server (Burstable B1ms), and a Basic-tier Azure Container Registry
-(ACR) — nothing else. No application code is deployed by these scripts.
+(ACR) — nothing else. `dev01`-`dev04` deploy no application code.
+
+`dev05` and `dev06` (Stage 2) build on that infrastructure to get the
+*existing* API container running on ACA, reachable over its managed-ingress
+URL, with `GET /health` returning 200 — before the database is migrated or
+the web frontend exists. See
+[`stage-instructions/stage-2-build-minimal-api-container-deploy-to-aca-with-health-probe.md`](../../../stage-instructions/stage-2-build-minimal-api-container-deploy-to-aca-with-health-probe.md).
 
 This is a separate, new IaC surface from `deployment/azure/scripts/az01`
 through `az12a*`, which build the team's two-region, production-HA topology
@@ -48,6 +54,36 @@ bash dev03-container-registry.sh
 bash dev04-postgresql-flexible-server.sh
 ```
 
+Then, once `dev01`-`dev04` have all completed, build and deploy the API
+container (Stage 2):
+
+```bash
+bash dev05-build-push-api-image.sh
+bash dev06-deploy-api-aca.sh
+```
+
+- `dev05-build-push-api-image.sh` builds `deployment/containers/api/Dockerfile`
+  with `az acr build` (no local Docker or ACR admin credentials required —
+  it uses the operator's own Azure RBAC on the registry, the same approach
+  `deployment/azure/scripts/az08b` uses in production) and pushes it to the
+  `dev03` registry, tagged from the current git commit. It records the exact
+  pushed image digest into `dev-environment.env` for `dev06` to deploy.
+- `dev06-deploy-api-aca.sh` creates (or updates) the `ca-phd-dev-api-westus3`
+  Container App in the `dev02` environment: external ingress, target port
+  `5080`, `min-replicas=0` per ADR 0001, and `PTP_DB_HOST`/`PTP_DB_PORT`/
+  `PTP_DB_NAME`/`PTP_DB_USER`/`PTP_DB_PASSWORD` env vars pointed at the
+  `dev04` PostgreSQL server (the DB password is read from
+  `dev-postgres-admin-password.txt` and stored as a Container Apps secret,
+  never as a plaintext env var). The schema isn't migrated yet at this
+  stage — that's fine, because `GET /health` has no DB dependency. For a
+  brand-new app, it bootstraps with a public placeholder image first so the
+  Container App's system-assigned managed identity can exist before granting
+  it `AcrPull` on the registry (Azure's documented pattern for
+  system-assigned-identity image pull), then updates to the real image.
+- Once `dev06` finishes, record the printed Container App URL in
+  `.verity/deploy-access.md` (see the `TBD` placeholder line there) and
+  confirm `curl https://<url>/health` returns HTTP 200.
+
 Each script:
 
 - Checks whether its resource already exists in the expected shape before
@@ -71,6 +107,7 @@ record once this stage has actually been run):
 | ACA environment | `cae-phd-dev-westus3` |
 | ACR (Basic) | `acrphddev<subscription-derived suffix>` |
 | PostgreSQL Flexible Server (Burstable B1ms) | `pg-phd-dev-w3-<subscription-derived suffix>` |
+| API Container App (Stage 2, `dev06`) | `ca-phd-dev-api-westus3` — public URL TBD until an operator actually runs `dev06-deploy-api-aca.sh`; record it in `.verity/deploy-access.md` once known |
 
 ## Known limitation: the PostgreSQL firewall rule is broader than "ACA only"
 

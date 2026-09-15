@@ -42,6 +42,16 @@ POSTGRES_ADMIN_USER="phdpgadmin"
 POSTGRES_VERSION="16"
 POSTGRES_SKU="Standard_B1ms"
 POSTGRES_STORAGE_GIB="32"
+POSTGRES_PORT="5432"
+
+# Stage 2 (deployment/azure/dev/dev05-*, dev06-*): the API Container App.
+# Naming follows the same "ca-phd-<env>-<role>-<region>" pattern already used
+# by deployment/azure/scripts/az08b for the production/test topology
+# (ca-phd-test-api-westus3), swapping in the "dev" environment segment.
+API_APP_NAME="ca-phd-dev-api-westus3"
+API_REPOSITORY="project-health-dashboard-api"
+# Confirmed in deployment/containers/api/Dockerfile (ASPNETCORE_HTTP_PORTS/EXPOSE).
+API_TARGET_PORT="5080"
 
 BASE_DIR="${HOME}/project-health-dashboard-azure"
 CONFIG_DIR="${BASE_DIR}/config"
@@ -105,4 +115,15 @@ record_config() {
         echo "${key}=${value}" >> "$DEV_CONFIG_FILE"
     fi
     chmod 600 "$DEV_CONFIG_FILE"
+}
+
+# read_config KEY: read back a value previously written by record_config.
+# Prints an empty string (not an error) if the config file or the key does
+# not exist yet, so callers are expected to check for an empty result and
+# fail with a clear "run dev0N first" message rather than relying on this
+# function to fail loudly itself.
+read_config() {
+    local key="$1"
+    [ -f "$DEV_CONFIG_FILE" ] || return 0
+    awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/, ""); print}' "$DEV_CONFIG_FILE"
 }
