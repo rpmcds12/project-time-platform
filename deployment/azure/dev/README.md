@@ -52,6 +52,7 @@ bash dev01-resource-group.sh
 bash dev02-container-apps-environment.sh
 bash dev03-container-registry.sh
 bash dev04-postgresql-flexible-server.sh
+bash dev07-run-all-migrations.sh
 ```
 
 Then, once `dev01`-`dev04` have all completed, build and deploy the API
@@ -176,6 +177,72 @@ rather than working around it.
 actual/forecast spend is tracking toward the ~$30-45/mo target from ADR
 0001, not the $150/$180/$195/$200 warning/critical/emergency/ceiling
 thresholds.
+
+## DEV-07: applying database migrations
+
+`dev07-run-all-migrations.sh` is the next step after `dev04`, and must run
+before any application deploy. There is no other unified migration runner in
+this repo - migrations are otherwise applied one at a time via bespoke
+scripts under `deployment/rocky-linux/` (`apply-initial-schema.sh`,
+`apply-migration-NNN.sh`); `dev07` is new tooling that applies every
+`database/migrations/*.sql` file in filename order against Stage 1's DEV
+Postgres server in one run.
+
+Prerequisites:
+
+- `dev04-postgresql-flexible-server.sh` has already run (dev07 reads
+  `POSTGRES_FQDN`/`POSTGRES_DATABASE`/`POSTGRES_ADMIN_USER`/`POSTGRES_PORT`
+  back out of `$HOME/project-health-dashboard-azure/config/dev-environment.env`
+  and the admin password out of
+  `$HOME/project-health-dashboard-azure/config/dev-postgres-admin-password.txt`
+  rather than re-deriving connection info).
+- A `psql` client on `PATH` (macOS: `brew install libpq` and add it to
+  `PATH`, since Homebrew's `libpq` is keg-only).
+
+```bash
+bash dev07-run-all-migrations.sh
+```
+
+What it does:
+
+- Connects with the same `PTP_DB_HOST`/`PTP_DB_PORT`/`PTP_DB_NAME`/
+  `PTP_DB_USER`/`PTP_DB_PASSWORD` env-var shape the application itself reads
+  (`src/backend/ProjectTime.Api/Program.cs`), for consistency, even though
+  this script talks to Postgres directly rather than through the app.
+- Iterates `database/migrations/*.sql` in filename order and checks the
+  `schema_migrations` table before applying each one, mirroring the
+  idempotency pattern in `apply-initial-schema.sh` - already-applied
+  migrations are skipped, so re-running the script is safe.
+- Records a `schema_migrations` row for every migration it applies, even for
+  the migration files that don't already insert their own row (a meaningful
+  minority of files under `database/migrations/` - confirmed while writing
+  this script - never reference `schema_migrations` at all). Doing this in
+  the runner rather than relying on each file to self-register keeps
+  tracking authoritative and makes re-runs a true no-op for every migration,
+  not just the ones whose own SQL happens to insert a row.
+- Fails loudly (non-zero exit, an `ERROR:` line) and stops on the first
+  failing migration rather than continuing past it.
+- Writes a timestamped log to `$HOME/project-health-dashboard-azure/logs/`.
+
+**Verify success:** the script's own validation step compares
+`SELECT COUNT(*) FROM schema_migrations` against the number of
+`database/migrations/*.sql` files and fails if they don't match, but you can
+re-check by hand:
+
+```bash
+ls database/migrations/*.sql | wc -l
+psql -h <POSTGRES_FQDN> -p 5432 -U <POSTGRES_ADMIN_USER> -d <POSTGRES_DATABASE> \
+  -c "SELECT COUNT(*) FROM schema_migrations;"
+```
+
+The two counts should match exactly. As a spot check, confirm a handful of
+expected tables exist, e.g. Module 025's `module025_sow_gsd_engagements`
+(added by `database/migrations/099_module025_sow_gsd_workspace.sql`).
+
+This script has not been run against a live database as part of writing it -
+Stage 1's Postgres instance had not been provisioned yet when this was
+written, and running it is a manual operator step after this change is
+reviewed and merged.
 
 ## Tearing down
 
