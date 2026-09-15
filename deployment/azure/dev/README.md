@@ -13,6 +13,13 @@ URL, with `GET /health` returning 200 — before the database is migrated or
 the web frontend exists. See
 [`stage-instructions/stage-2-build-minimal-api-container-deploy-to-aca-with-health-probe.md`](../../../stage-instructions/stage-2-build-minimal-api-container-deploy-to-aca-with-health-probe.md).
 
+`dev08`, `dev09`, and `dev10` (Stage 4) complete the walking skeleton: build
+and deploy the existing web (nginx/React) container as a second Container
+App wired to the Stage 2 API app, and provide a reusable end-to-end smoke
+test that proves the web + API + migrated-DB path actually works over the
+public ACA ingress URLs. See
+[`stage-instructions/stage-4-wire-migrated-db-deploy-web-container-walking-skeleton-smoke-te.md`](../../../stage-instructions/stage-4-wire-migrated-db-deploy-web-container-walking-skeleton-smoke-te.md).
+
 This is a separate, new IaC surface from `deployment/azure/scripts/az01`
 through `az12a*`, which build the team's two-region, production-HA topology
 against the same subscription. Do not run the `az0N` scripts and the `devN`
@@ -85,6 +92,61 @@ bash dev06-deploy-api-aca.sh
   `.verity/deploy-access.md` (see the `TBD` placeholder line there) and
   confirm `curl https://<url>/health` returns HTTP 200.
 
+Once the database is migrated (`dev07`, above) and the API app is deployed
+(`dev05`/`dev06`, above), build and deploy the web container and run the
+walking-skeleton smoke test (Stage 4):
+
+```bash
+bash dev08-build-push-web-image.sh
+bash dev09-deploy-web-aca.sh
+bash dev10-smoke-test.sh
+```
+
+- `dev08-build-push-web-image.sh` builds `deployment/containers/web/Dockerfile`
+  with `az acr build` and pushes it to the `dev03` registry, tagged from the
+  current git commit — the exact same pattern as `dev05`, just pointed at
+  the web (nginx/React) image instead of the API image. It records the
+  pushed image digest as `WEB_IMAGE` in `dev-environment.env` for `dev09` to
+  deploy.
+- `dev09-deploy-web-aca.sh` creates (or updates) the `ca-phd-dev-web-westus3`
+  Container App in the `dev02` environment: external ingress, target port
+  `8080`, `min-replicas=0` per ADR 0001 — the same bootstrap-then-update
+  pattern `dev06` uses for ACR pull auth, since ACR admin is disabled. It
+  needs no database credentials (the web container never talks to Postgres
+  directly); instead it sets a single `API_UPSTREAM` env var to the Stage 2
+  API app's URL (`API_APP_URL`, recorded by `dev06`).
+  - **How the web container finds the API:** `deployment/containers/web/Dockerfile`
+    sets `NGINX_ENVSUBST_FILTER="^(API_UPSTREAM|NGINX_RESOLVER)$"`, and the
+    image's entrypoint runs nginx's own `docker-entrypoint.sh`, which
+    `envsubst`s `${API_UPSTREAM}` into
+    `deployment/containers/web/default.conf.template`'s `location /health`
+    and `location /api/` `proxy_pass` rules. The React app itself only ever
+    calls relative `/api/...` and `/health` paths (see
+    `src/frontend/project-time-web/vite.config.js`'s dev-server proxy for
+    the same pattern) — there is no build-time API base URL baked into the
+    frontend bundle. So `API_UPSTREAM` is a runtime Container App env var,
+    not something that requires rebuilding the web image to change.
+- `dev10-smoke-test.sh` is the end-to-end walking-skeleton smoke test: it
+  curls the web app's public URL and checks for real rendered HTML (not a
+  blank page — looks for `<html`, `id="root"`, and `<title>Pulse</title>`),
+  curls the API app's `/health` for a plain 200, curls the API app's
+  `/api/db-health` directly to prove a real Postgres round trip (see below),
+  and curls that same `/api/db-health` route *through* the web app's own
+  nginx reverse proxy to prove the full web → API → DB path works over the
+  public ACA ingress end to end. It prints a PASS/FAIL line per check plus
+  an overall summary, and exits non-zero if anything failed, so it doubles
+  as a checklist for `/verity:ship` to re-run after every future deploy to
+  this environment.
+  - **Why `/api/db-health` is the DB-backed check:** most `/api/*` routes in
+    `src/backend/ProjectTime.Api/Program.cs` require a session
+    (`GetProjectPulseSessionUserId`) and return 401 without one. `GET
+    /api/db-health` (around Program.cs:871) is a genuine exception — no
+    session check, and it opens a real `NpgsqlConnection` and runs `SELECT
+    current_database(), current_user, now();`, returning
+    `{"status":"database_connected", ...}` on success. That made the
+    spec's fallback plan (treating a 401 as proof of DB connectivity when
+    every real endpoint requires SSO) unnecessary here.
+
 Each script:
 
 - Checks whether its resource already exists in the expected shape before
@@ -109,6 +171,7 @@ record once this stage has actually been run):
 | ACR (Basic) | `acrphddev<subscription-derived suffix>` |
 | PostgreSQL Flexible Server (Burstable B1ms) | `pg-phd-dev-w3-<subscription-derived suffix>` |
 | API Container App (Stage 2, `dev06`) | `ca-phd-dev-api-westus3` — public URL TBD until an operator actually runs `dev06-deploy-api-aca.sh`; record it in `.verity/deploy-access.md` once known |
+| Web Container App (Stage 4, `dev09`) | `ca-phd-dev-web-westus3` — public URL TBD until an operator actually runs `dev09-deploy-web-aca.sh`; record it in `.verity/deploy-access.md` once known |
 
 ## Known limitation: the PostgreSQL firewall rule is broader than "ACA only"
 

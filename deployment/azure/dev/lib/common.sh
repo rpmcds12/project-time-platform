@@ -53,6 +53,15 @@ API_REPOSITORY="project-health-dashboard-api"
 # Confirmed in deployment/containers/api/Dockerfile (ASPNETCORE_HTTP_PORTS/EXPOSE).
 API_TARGET_PORT="5080"
 
+# Stage 4 (deployment/azure/dev/dev08-*, dev09-*): the web (nginx/React)
+# Container App. Same "ca-phd-<env>-<role>-<region>" naming convention as
+# API_APP_NAME above.
+WEB_APP_NAME="ca-phd-dev-web-westus3"
+WEB_REPOSITORY="project-health-dashboard-web"
+# Confirmed in deployment/containers/web/Dockerfile (EXPOSE) and
+# deployment/containers/web/default.conf.template ("listen 8080;").
+WEB_TARGET_PORT="8080"
+
 BASE_DIR="${HOME}/project-health-dashboard-azure"
 CONFIG_DIR="${BASE_DIR}/config"
 LOG_DIR="${BASE_DIR}/logs"
